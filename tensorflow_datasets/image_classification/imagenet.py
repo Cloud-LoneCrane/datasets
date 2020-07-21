@@ -24,6 +24,8 @@ import io
 import os
 import tarfile
 
+from absl import logging
+
 import tensorflow.compat.v2 as tf
 import tensorflow_datasets.public_api as tfds
 
@@ -145,14 +147,14 @@ class Imagenet2012(tfds.core.GeneratorBasedBuilder):
   def _split_generators(self, dl_manager):
     train_path = os.path.join(dl_manager.manual_dir, 'ILSVRC2012_img_train.tar')
     val_path = os.path.join(dl_manager.manual_dir, 'ILSVRC2012_img_val.tar')
-    # We don't import the original test split, as it doesn't include labels.
-    # These were never publicly released.
+    test_path = os.path.join(dl_manager.manual_dir,
+                             'ILSVRC2012_img_test_v10102019.tar')
     if not tf.io.gfile.exists(train_path) or not tf.io.gfile.exists(val_path):
       raise AssertionError(
           'ImageNet requires manual download of the data. Please download '
           'the train and val set and place them into: {}, {}'.format(
               train_path, val_path))
-    return [
+    splits = [
         tfds.core.SplitGenerator(
             name=tfds.Split.TRAIN,
             gen_kwargs={
@@ -168,6 +170,21 @@ class Imagenet2012(tfds.core.GeneratorBasedBuilder):
         ),
     ]
 
+    if not tf.io.gfile.exists(test_path):
+      logging.warning('ImageNet 2012 Challenge TEST split not found at %s. '
+                      'Please download this split. Proceeding with data '
+                      'generation anyways to retain backward compatibility.',
+                      test_path)
+    else:
+      splits.append(
+          tfds.core.SplitGenerator(
+              name=tfds.Split.TEST,
+              gen_kwargs={
+                  'archive': dl_manager.iter_archive(test_path),
+                  'labels_exist': False,
+              }))
+    return splits
+
   def _fix_image(self, image_fname, image):
     """Fix image color system and format starting from v 3.0.0."""
     if self.version < '3.0.0':
@@ -178,8 +195,12 @@ class Imagenet2012(tfds.core.GeneratorBasedBuilder):
       image = io.BytesIO(tfds.core.utils.png_to_jpeg(image.read()))
     return image
 
-  def _generate_examples(self, archive, validation_labels=None):
+  def _generate_examples(self, archive, validation_labels=None,
+                         labels_exist=True):
     """Yields examples."""
+    if not labels_exist:  # Test split
+      for key, example in self._generate_examples_test(archive):
+        yield key, example
     if validation_labels:  # Validation split
       for key, example in self._generate_examples_validation(archive,
                                                              validation_labels):
@@ -208,5 +229,14 @@ class Imagenet2012(tfds.core.GeneratorBasedBuilder):
           'file_name': fname,
           'image': fobj,
           'label': labels[fname],
+      }
+      yield fname, record
+
+  def _generate_examples_test(self, archive):
+    for fname, fobj in archive:
+      record = {
+          'file_name': fname,
+          'image': fobj,
+          'label': [],
       }
       yield fname, record
